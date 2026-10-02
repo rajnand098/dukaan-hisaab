@@ -1,5 +1,6 @@
 import sqlite3
 from datetime import date
+from io import BytesIO
 
 import pandas as pd
 import streamlit as st
@@ -258,6 +259,34 @@ elif page == "Hisaab":
             f"{sale - kharcha:,.0f}. Ye asli munafa nahi hai, kyunki maal ki cost "
             "alag se nahi joda hai (ye agle step mein aayega)."
         )
+
+        # ----- Excel download -----
+        if d.empty:
+            st.info("Is date range mein koi entry nahi hai, isliye Excel nahi ban sakta.")
+        else:
+            entries = d.drop(columns=["id"]).copy()
+            entries["kind"] = entries["kind"].map(KINDS)
+            entries = entries.rename(
+                columns={"date": "Date", "kind": "Type", "party": "Party",
+                         "amount": "Amount (Rs)", "note": "Note"}
+            )
+            summary = pd.DataFrame(
+                {
+                    "Detail": ["Total sale", "Udhaar diya", "Total kharcha",
+                               "Cash in", "Sale - kharcha"],
+                    "Rs": [sale, udhaar, kharcha, cash_in, sale - kharcha],
+                }
+            )
+            buf = BytesIO()
+            with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+                summary.to_excel(writer, sheet_name="Summary", index=False)
+                entries.to_excel(writer, sheet_name="Entries", index=False)
+            st.download_button(
+                "Excel download karo",
+                data=buf.getvalue(),
+                file_name=f"hisaab_{start}_{end}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
 # ----- 4. Udhaar list -----
 elif page == "Udhaar list":
