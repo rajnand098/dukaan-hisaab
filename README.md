@@ -1,4 +1,5 @@
 # Dukaan Hisaab
+Status: Phase 1 testing (using the app with real entries)
 
 A simple bookkeeping app for small shops, built with Python and Streamlit.
 It helps shopkeepers record sales, expenses and udhaar (credit), and see their daily summary.
