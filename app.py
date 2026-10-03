@@ -15,6 +15,7 @@ KINDS = {
     "purchase": "Maal kharida",
 }
 NEEDS_PARTY = {"sale_udhaar", "payment_received"}
+SALE_KINDS = ["sale_cash", "sale_udhaar"]
 NO_PARTY = "(koi nahi)"
 NEW_PARTY = "+ Nayi party"
 
@@ -28,6 +29,10 @@ def get_conn():
             id INTEGER PRIMARY KEY, date TEXT, kind TEXT,
             party TEXT, amount REAL, note TEXT)"""
     )
+    # Maal ki cost ka column (purani database mein na ho to jod do)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(txns)")]
+    if "cost" not in cols:
+        conn.execute("ALTER TABLE txns ADD COLUMN cost REAL DEFAULT 0")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS parties(name TEXT PRIMARY KEY COLLATE NOCASE)"
     )
@@ -115,8 +120,20 @@ def entry_inputs(key, d=None):
         value=float(d.get("amount", 0.0)),
         key=f"{key}_amount",
     )
+    cost = 0.0
+    if kind in SALE_KINDS:
+        old_cost = d.get("cost")
+        old_cost = 0.0 if old_cost is None or pd.isna(old_cost) else float(old_cost)
+        cost = st.number_input(
+            "Maal ki cost (Rs), optional",
+            min_value=0.0,
+            step=10.0,
+            value=old_cost,
+            key=f"{key}_cost",
+            help="Jo maal bika uski kharid ki cost. Khali (0) chhodo to asli munafa sahi nahi nikalega.",
+        )
     note = st.text_input("Note", value=d.get("note") or "", key=f"{key}_note")
-    return dt, kind, party, amount, note
+    return dt, kind, party, amount, cost, note
 
 
 def validate(dt, kind, party, amount, edit_id=None):
@@ -150,7 +167,7 @@ if "msg" in st.session_state:
 if page == "Nayi entry":
     st.subheader("Nayi entry")
     key = f"new{st.session_state.ver}"  # save ke baad form khali ho jaye
-    dt, kind, party, amount, note = entry_inputs(key)
+    dt, kind, party, amount, cost, note = entry_inputs(key)
     if st.button("Save", type="primary"):
         errors = validate(dt, kind, party, amount)
         if errors:
@@ -165,8 +182,8 @@ if page == "Nayi entry":
                     "payment usse zyada hai. Entry save ho gayi."
                 )
             conn.execute(
-                "INSERT INTO txns(date,kind,party,amount,note) VALUES (?,?,?,?,?)",
-                (str(dt), kind, party, amount, note.strip()),
+                "INSERT INTO txns(date,kind,party,amount,cost,note) VALUES (?,?,?,?,?,?)",
+                (str(dt), kind, party, amount, cost, note.strip()),
             )
             conn.commit()
             st.session_state.ver += 1
@@ -207,7 +224,7 @@ elif page == "Entries (edit/delete)":
                 "Kaun si entry badalni hai?", list(labels), format_func=lambda i: labels[i]
             )
             row = d[d.id == eid].iloc[0].to_dict()
-            dt, kind, party, amount, note = entry_inputs(f"edit{eid}", row)
+            dt, kind, party, amount, cost, note = entry_inputs(f"edit{eid}", row)
 
             b1, b2 = st.columns(2)
             if b1.button("Badlav save karo", type="primary"):
@@ -219,8 +236,8 @@ elif page == "Entries (edit/delete)":
                     if party.strip():
                         party = add_party(party)
                     conn.execute(
-                        "UPDATE txns SET date=?, kind=?, party=?, amount=?, note=? WHERE id=?",
-                        (str(dt), kind, party, amount, note.strip(), int(eid)),
+                        "UPDATE txns SET date=?, kind=?, party=?, amount=?, cost=?, note=? WHERE id=?",
+                        (str(dt), kind, party, amount, cost, note.strip(), int(eid)),
                     )
                     conn.commit()
                     st.session_state.msg = f"Entry #{eid} badal di."
@@ -254,11 +271,22 @@ elif page == "Hisaab":
         m3, m4 = st.columns(2)
         m3.metric("Gale mein aaya (cash in)", f"Rs {cash_in:,.0f}")
         m4.metric("Udhaar diya", f"Rs {udhaar:,.0f}")
+        cost_total = d[d.kind.isin(SALE_KINDS)].cost.fillna(0).sum()
+        dukaan_kharcha = d[d.kind == "expense"].amount.sum()
+        asli = sale - cost_total - dukaan_kharcha
+        st.markdown("---")
+        p1, p2 = st.columns(2)
+        p1.metric("Bika hua maal ki cost", f"Rs {cost_total:,.0f}")
+        p2.metric("Asli munafa", f"Rs {asli:,.0f}")
         st.caption(
-            "Sale - kharcha = Rs "
-            f"{sale - kharcha:,.0f}. Ye asli munafa nahi hai, kyunki maal ki cost "
-            "alag se nahi joda hai (ye agle step mein aayega)."
+            "Asli munafa = Sale - maal ki cost - dukaan ka kharcha (kiraya, bijli, etc.). "
+            "'Maal kharida' ko isme nahi ginte, kyunki uski cost sale ke saath judti hai."
         )
+        if sale > 0 and cost_total == 0:
+            st.warning(
+                "Sale ki entries mein maal ki cost nahi daali hai, isliye asli munafa "
+                "zyada dikh sakta hai."
+            )
 
         # ----- Excel download -----
         if d.empty:
@@ -268,13 +296,16 @@ elif page == "Hisaab":
             entries["kind"] = entries["kind"].map(KINDS)
             entries = entries.rename(
                 columns={"date": "Date", "kind": "Type", "party": "Party",
-                         "amount": "Amount (Rs)", "note": "Note"}
+                         "amount": "Amount (Rs)", "cost": "Maal ki cost (Rs)",
+                         "note": "Note"}
             )
             summary = pd.DataFrame(
                 {
                     "Detail": ["Total sale", "Udhaar diya", "Total kharcha",
-                               "Cash in", "Sale - kharcha"],
-                    "Rs": [sale, udhaar, kharcha, cash_in, sale - kharcha],
+                               "Cash in", "Maal ki cost", "Dukaan ka kharcha",
+                               "Asli munafa"],
+                    "Rs": [sale, udhaar, kharcha, cash_in, cost_total,
+                           dukaan_kharcha, asli],
                 }
             )
             buf = BytesIO()
